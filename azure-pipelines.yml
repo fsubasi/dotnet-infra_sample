@@ -1,0 +1,78 @@
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+- stage: Login
+  displayName: Login
+  jobs:
+  - job: Login
+    displayName: Login
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: Docker@2
+      inputs:
+        containerRegistry: 'docker hub'
+        command: 'login'
+
+- stage: buildAndPush
+  displayName: Build, Test, and Push
+  jobs:
+  - job: buildAndPush
+    displayName: Build, Test, and Push
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - script: dotnet restore ./sample-app/sample-app.csproj
+      displayName: 'Restore dependencies'
+    - script: dotnet build --configuration Release ./sample-app/sample-app.csproj
+      displayName: 'Build application'
+    - script: dotnet test ./sample-app.Tests/sample-app.Tests.csproj --logger "trx;LogFileName=test_results.xml" --results-directory $(Build.SourcesDirectory)/TestResults
+      displayName: 'Run unit tests'
+      continueOnError: false
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'VSTest'
+        testResultsFiles: '**/unit_test_results.xml'
+        searchFolder: '$(Build.SourcesDirectory)/TestResults'
+      condition: succeededOrFailed()
+      displayName: 'Publish Unit Test Results'
+    - script: dotnet test ./sample-app.IntegrationTests/sample-app.IntegrationTests.csproj --logger "trx;LogFileName=integration_test_results.xml" --results-directory $(Build.SourcesDirectory)/TestResults
+      displayName: 'Run integration tests'
+      continueOnError: false
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'VSTest'
+        testResultsFiles: '**/integration_test_results.xml'
+        searchFolder: '$(Build.SourcesDirectory)/TestResults'
+      condition: succeededOrFailed()
+      displayName: 'Publish Integration Test Results'
+    - task: Docker@2
+      inputs:
+        containerRegistry: 'docker hub'
+        repository: 'fsubasi/azure-devops'
+        command: 'buildAndPush'
+        Dockerfile: '**/Dockerfile'
+      displayName: 'Build and Push Docker Image'
+
+- stage: Deploy
+  displayName: Deploy
+  jobs:
+  - job: Deploy
+    displayName: Deploy
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: HelmDeploy@0
+      inputs:
+        connectionType: 'Kubernetes Service Connection'
+        kubernetesServiceConnection: 'aks-fermel'
+        namespace: 'default'
+        command: 'upgrade'
+        chartType: 'FilePath'
+        chartPath: 'sample-app/kubernetes/charts/dotnet-app-chart'
+        releaseName: 'dotnet-release'
+        valueFile: 'sample-app/kubernetes/charts/dotnet-app-chart/values.yaml'
+        arguments: '--set image.repository=fsubasi/azure-devops,image.tag=$(Build.BuildId)'
